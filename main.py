@@ -30,10 +30,6 @@ scrape_tool = ScrapeWebsiteTool()
 # 🚀 Initialize FastAPI
 app = FastAPI()
 
-class CrewOutput:
-    def __init__(self, artifacts=None):
-        self.artifacts = artifacts  # This might be missing or None
-
 # 📌 Define Data Models
 class PredictionRequest(BaseModel):
     id: int
@@ -71,7 +67,7 @@ scrape_agent = Agent(
     llm=ChatOpenAI(model_name="gpt-4o", temperature=0.7)
 )
 
-# 💡 **Answer Processing Agent**
+# 🤖 **Answer Processing Agent**
 answer_agent = Agent(
     role="Answer Agent",
     backstory="Agent responsible for answering questions using extracted information.",
@@ -128,28 +124,27 @@ def extract_answer_options(query: str) -> List[str]:
 # 🔥 **Find Correct Answer from GPT Response**
 def find_correct_answer(gpt_response: str, answer_options: List[str]) -> Optional[int]:
     for i, option in enumerate(answer_options, 1):
+        # Simple substring match – adjust if needed
         if option.lower() in gpt_response.lower():
             return i
     return None
 
-# 🎯 **Main FastAPI Endpoint**
+
 @app.post("/api/request", response_model=PredictionResponse)
 async def predict(request: PredictionRequest):
     try:
-        # Execute CrewAI process
+        # Execute the CrewAI process
         inputs = {"query": request.query}
         result = crew.kickoff(inputs=inputs)
 
+        # result.raw is the final combined LLM output from the tasks
         gpt_response = result.raw.strip()
         answer_options = extract_answer_options(request.query)
         answer = find_correct_answer(gpt_response, answer_options)
 
-        # Collect sources from search & scrape results
-        # Ensure result.artifacts exists and is a list
-        if not hasattr(result, "artifacts") or not isinstance(result.artifacts, list):
-            raise ValueError("CrewOutput missing 'artifacts' or is not a list")
-
-        sources = [url for url in (result.artifacts or []) if url]
+        # If you need to parse actual sources, you'd do it from
+        # the search or scrape task outputs. For now, we'll return an empty list
+        sources = []
 
         return PredictionResponse(
             id=request.id,
