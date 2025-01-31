@@ -1,5 +1,3 @@
-version: "3.8"
-
 services:
   fastapi-service:
     build: .
@@ -7,11 +5,15 @@ services:
     ports:
       - "8080:8080"
     restart: unless-stopped
+    env_file:
+      - .env  # Загружаем переменные окружения из .env
     environment:
       - TZ=UTC
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - SERPER_API_KEY=${SERPER_API_KEY} # Передаем API-ключ внутрь контейнера
     volumes:
       - ./logs:/app/logs
-    # Если нужно GPU
+    # GPU, если нужно
     # runtime: nvidia
     # deploy:
     #   resources:
