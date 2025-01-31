@@ -1,17 +1,17 @@
 import os
-import time
 import openai
 import requests
 from typing import List, Optional
 
-from lxml import html
-
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, HttpUrl
 from dotenv import load_dotenv
-from crewai_tools import ScrapeWebsiteTool, SerperDevTool
 
-# Загрузка переменных окружения
+from crewai import Agent, Task, Crew, Process
+from crewai_tools import ScrapeWebsiteTool, SerperDevTool
+from langchain_openai import ChatOpenAI
+
+# 🔄 Load environment variables
 load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 SERPER_API_KEY = os.getenv("SERPER_API_KEY")
@@ -23,16 +23,21 @@ if not SERPER_API_KEY:
 
 openai.api_key = OPENAI_API_KEY
 
-# Инициализация инструментов
+# 📌 Initialize tools
 search_tool = SerperDevTool()
 scrape_tool = ScrapeWebsiteTool()
 
+# 🚀 Initialize FastAPI
+app = FastAPI()
 
-# Определение схем данных
+class CrewOutput:
+    def __init__(self, artifacts=None):
+        self.artifacts = artifacts  # This might be missing or None
+
+# 📌 Define Data Models
 class PredictionRequest(BaseModel):
     id: int
     query: str
-
 
 class PredictionResponse(BaseModel):
     id: int
@@ -40,106 +45,111 @@ class PredictionResponse(BaseModel):
     reasoning: str
     sources: List[HttpUrl]
 
+# 🔍 **Search News Agent**
+search_agent = Agent(
+    role="Search Agent",
+    backstory="Agent responsible for retrieving ITMO-related news articles.",
+    goal="Find ITMO-related news articles using SerperDevTool.",
+    tools=[search_tool],
+    allow_delegation=False,
+    verbose=True,
+    max_iter=2,
+    max_rpm=10,
+    llm=ChatOpenAI(model_name="gpt-4o", temperature=0.7)
+)
 
-# Инициализация FastAPI
-app = FastAPI()
+# 📄 **Scrape News Agent**
+scrape_agent = Agent(
+    role="Scraping Agent",
+    backstory="Specialized in extracting content from web pages.",
+    goal="Extract content from ITMO news articles.",
+    tools=[scrape_tool],
+    allow_delegation=False,
+    verbose=True,
+    max_iter=2,
+    max_rpm=10,
+    llm=ChatOpenAI(model_name="gpt-4o", temperature=0.7)
+)
+
+# 💡 **Answer Processing Agent**
+answer_agent = Agent(
+    role="Answer Agent",
+    backstory="Agent responsible for answering questions using extracted information.",
+    goal="Write correct answer for the question.",
+    tools=[],
+    allow_delegation=False,
+    verbose=True,
+    max_iter=3,
+    max_rpm=10,
+    llm=ChatOpenAI(model_name="gpt-4o", temperature=0.7)
+)
+
+# 🔎 **Task 1: Search ITMO News**
+search_task = Task(
+    description="Find news articles related to {query} on ITMO using SerperDevTool.",
+    expected_output="A short list of URLs of ITMO news articles.",
+    agent=search_agent
+)
+
+# 📑 **Task 2: Scrape News Articles**
+scrape_task = Task(
+    description="Scrape the content from news articles found in the search step.",
+    expected_output="One sentence from news articles with answer to the question.",
+    agent=scrape_agent,
+    context=[search_task]
+)
+
+# 🤖 **Task 3: Process Question and Answer**
+answer_task = Task(
+    description="Analyze the extracted news content and answer the user's question.",
+    expected_output="Very short answer to the question, selecting the correct option.",
+    agent=answer_agent,
+    context=[scrape_task]
+)
+
+# 🚀 **Define Crew**
+crew = Crew(
+    agents=[search_agent, scrape_agent, answer_agent],
+    tasks=[search_task, scrape_task, answer_task],
+    process=Process.sequential,
+    verbose=True
+)
 
 
-# 🔍 **Search news using Google (SerperDevTool)**
-def search_itmo_news(query: str) -> List[str]:
-    """Searches for ITMO news articles using SerperDevTool (Google search restricted to news.itmo.ru)."""
-    search_query = f"site:news.itmo.ru {query}"
-    results = search_tool.run(search_query)
-
-    if not results or "organic" not in results:
-        return []
-
-    # Extract up to 10 links from search results
-    links = [res["link"] for res in results.get("organic", [])[:10]]
-    return links
-
-
-# 📄 **Scrape article content**
-def scrape_news_page(url: str) -> dict:
-    """Extracts news article content using ScrapeWebsiteTool."""
-    scraped_content = scrape_tool.run(url)
-
-    return {
-        "content": scraped_content if scraped_content else "No content available",
-        "url": url
-    }
-
-
-# Функция для поиска ссылок
-async def search_links(query: str) -> List[HttpUrl]:
-    search_url = "https://api.duckduckgo.com/"
-    params = {
-        "q": query,
-        "format": "json",
-        "no_html": 1,
-        "skip_disambig": 1
-    }
-    response = requests.get(search_url, params=params)
-    results = response.json().get("RelatedTopics", [])
-
-    links = []
-    for result in results[:3]:  # Ограничиваем 3 ссылками
-        if "FirstURL" in result:
-            links.append(result["FirstURL"])
-
-    return [HttpUrl(link) for link in links if link]
-
-
-# Функция обработки вариантов ответа
+# 🎯 **Extract Multiple Choice Options**
 def extract_answer_options(query: str) -> List[str]:
-    """Разделяем варианты ответа по шаблону '1. ', '2. ' и т.д."""
     options = []
-    for num in range(1, 11):  # Поддержка до 10 вариантов
+    for num in range(1, 11):
         split_query = query.split(f"{num}. ")
         if len(split_query) > 1:
-            options.append(split_query[1].split("\n")[0])  # Берем только текст варианта
+            options.append(split_query[1].split("\n")[0])
     return options
 
-
-# 🔥 Функция поиска правильного ответа
+# 🔥 **Find Correct Answer from GPT Response**
 def find_correct_answer(gpt_response: str, answer_options: List[str]) -> Optional[int]:
-    """Сопоставляем ответ GPT с вариантами ответа и находим правильный номер."""
     for i, option in enumerate(answer_options, 1):
         if option.lower() in gpt_response.lower():
-            return i  # Номер варианта
+            return i
     return None
 
-
-# Основная логика обработки запроса
+# 🎯 **Main FastAPI Endpoint**
 @app.post("/api/request", response_model=PredictionResponse)
 async def predict(request: PredictionRequest):
     try:
-        from openai import OpenAI
+        # Execute CrewAI process
+        inputs = {"query": request.query}
+        result = crew.kickoff(inputs=inputs)
 
-        client = OpenAI(api_key=OPENAI_API_KEY)
-
-        response = client.chat.completions.create(
-            model="gpt-4o",
-            messages=[{"role": "user", "content": request.query}],
-            max_tokens=200
-        )
-
-        gpt_response = response.choices[0].message.content.strip()
-
-        # Определяем, является ли вопрос с вариантами ответов
+        gpt_response = result.raw.strip()
         answer_options = extract_answer_options(request.query)
-
-        # Ищем правильный ответ по текстовому совпадению
         answer = find_correct_answer(gpt_response, answer_options)
 
-        # Search ITMO news
-        news_links = search_itmo_news(request.query)
+        # Collect sources from search & scrape results
+        # Ensure result.artifacts exists and is a list
+        if not hasattr(result, "artifacts") or not isinstance(result.artifacts, list):
+            raise ValueError("CrewOutput missing 'artifacts' or is not a list")
 
-        # Scrape first 3 news articles
-        scraped_news = [scrape_news_page(url) for url in news_links[:3]]
-
-        # Collect sources
-        sources = [news["url"] for news in scraped_news if news]
+        sources = [url for url in (result.artifacts or []) if url]
 
         return PredictionResponse(
             id=request.id,
