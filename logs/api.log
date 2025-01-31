@@ -1,0 +1,51 @@
+2025-01-31 02:05:04 | INFO | Incoming request: GET http://localhost:8080/
+Request body: 
+2025-01-31 02:05:04 | INFO | Request completed: GET http://localhost:8080/
+Status: 404
+Response body: {"detail":"Not Found"}
+Duration: 0.010s
+2025-01-31 02:05:04 | INFO | Incoming request: GET http://localhost:8080/favicon.ico
+Request body: 
+2025-01-31 02:05:04 | INFO | Request completed: GET http://localhost:8080/favicon.ico
+Status: 404
+Response body: {"detail":"Not Found"}
+Duration: 0.001s
+2025-01-31 02:24:41 | INFO | Incoming request: GET http://localhost:8080/
+Request body: 
+2025-01-31 02:24:41 | INFO | Request completed: GET http://localhost:8080/
+Status: 404
+Response body: {"detail":"Not Found"}
+Duration: 0.011s
+2025-01-31 02:24:49 | INFO | Incoming request: POST http://localhost:8080/api/request
+Request body: {
+  "query": "В каком городе находится главный кампус Университета ИТМО?\n1. Москва\n2. Санкт-Петербург\n3. Екатеринбург\n4. Нижний Новгород",
+  "id": 1
+}
+2025-01-31 02:24:49 | INFO | Processing prediction request with id: 1
+2025-01-31 02:24:49 | INFO | Successfully processed request 1
+2025-01-31 02:24:49 | INFO | Request completed: POST http://localhost:8080/api/request
+Status: 200
+Response body: {"id":1,"answer":1,"reasoning":"Из информации на сайте","sources":["https://itmo.ru/ru/","https://abit.itmo.ru/"]}
+Duration: 0.007s
+2025-01-31 02:36:15 | INFO | Incoming request: POST http://localhost:8080/api/request
+Request body: {
+  "query": "В каком городе находится главный кампус Университета ИТМО?\n1. Москва\n2. Санкт-Петербург\n3. Екатеринбург\n4. Нижний Новгород",
+  "id": 1
+}
+2025-01-31 02:36:15 | INFO | Processing prediction request with id: 1
+2025-01-31 02:36:15 | INFO | Successfully processed request 1
+2025-01-31 02:36:15 | INFO | Request completed: POST http://localhost:8080/api/request
+Status: 200
+Response body: {"id":1,"answer":1,"reasoning":"Из информации на сайте","sources":["https://itmo.ru/ru/","https://abit.itmo.ru/"]}
+Duration: 0.010s
+2025-01-31 02:40:47 | INFO | Incoming request: POST http://localhost:8080/api/request
+Request body: {
+  "query": "В каком городе находится главный кампус Университета ИТМО?\n1. Москва\n2. Санкт-Петербург\n3. Екатеринбург\n4. Нижний Новгород",
+  "id": 1
+}
+2025-01-31 02:40:47 | INFO | Processing prediction request with id: 1
+2025-01-31 02:40:47 | INFO | Successfully processed request 1
+2025-01-31 02:40:47 | INFO | Request completed: POST http://localhost:8080/api/request
+Status: 200
+Response body: {"id":1,"answer":1,"reasoning":"Из информации на сайте","sources":["https://itmo.ru/ru/","https://abit.itmo.ru/"]}
+Duration: 0.010s

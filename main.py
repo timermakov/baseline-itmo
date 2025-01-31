@@ -1,77 +1,130 @@
+import os
 import time
-from typing import List
+import openai
+import requests
+from typing import List, Optional
 
 from fastapi import FastAPI, HTTPException, Request, Response
-from pydantic import HttpUrl
-from schemas.request import PredictionRequest, PredictionResponse
-from utils.logger import setup_logger
+from pydantic import BaseModel, HttpUrl
+from dotenv import load_dotenv
 
-# Initialize
+# Загрузка переменных окружения
+load_dotenv()
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
+if not OPENAI_API_KEY:
+    raise ValueError("OPENAI_API_KEY not found in environment variables.")
+
+openai.api_key = OPENAI_API_KEY
+
+
+# Определение схем данных
+class PredictionRequest(BaseModel):
+    id: int
+    query: str
+
+
+class PredictionResponse(BaseModel):
+    id: int
+    answer: Optional[int]
+    reasoning: str
+    sources: List[HttpUrl]
+
+
+# Инициализация FastAPI
 app = FastAPI()
-logger = None
 
 
-@app.on_event("startup")
-async def startup_event():
-    global logger
-    logger = await setup_logger()
+# Функция для поиска ссылок
+async def search_links(query: str) -> List[HttpUrl]:
+    search_url = "https://api.duckduckgo.com/"
+    params = {
+        "q": query,
+        "format": "json",
+        "no_html": 1,
+        "skip_disambig": 1
+    }
+    response = requests.get(search_url, params=params)
+    results = response.json().get("RelatedTopics", [])
+
+    links = []
+    for result in results[:3]:  # Ограничиваем 3 ссылками
+        if "FirstURL" in result:
+            links.append(result["FirstURL"])
+
+    return [HttpUrl(link) for link in links if link]
 
 
-@app.middleware("http")
-async def log_requests(request: Request, call_next):
-    start_time = time.time()
+# Получение новостей с сайта ИТМО (тест)
+async def fetch_latest_news() -> List[HttpUrl]:
+    news_url = "https://news.itmo.ru/ru/science/it/"
+    response = requests.get(news_url)
 
-    body = await request.body()
-    await logger.info(
-        f"Incoming request: {request.method} {request.url}\n"
-        f"Request body: {body.decode()}"
-    )
+    if response.status_code != 200:
+        return []
 
-    response = await call_next(request)
-    process_time = time.time() - start_time
+    # Простая парсинговая логика (RSS XML)
+    import xml.etree.ElementTree as ET
+    root = ET.fromstring(response.content)
 
-    response_body = b""
-    async for chunk in response.body_iterator:
-        response_body += chunk
+    news_links = []
+    for item in root.findall(".//item")[:9]:
+        link = item.find("link")
+        if link is not None:
+            news_links.append(link.text)
 
-    await logger.info(
-        f"Request completed: {request.method} {request.url}\n"
-        f"Status: {response.status_code}\n"
-        f"Response body: {response_body.decode()}\n"
-        f"Duration: {process_time:.3f}s"
-    )
-
-    return Response(
-        content=response_body,
-        status_code=response.status_code,
-        headers=dict(response.headers),
-        media_type=response.media_type,
-    )
+    return [HttpUrl(link) for link in news_links if link]
 
 
+# Основная логика обработки запроса
 @app.post("/api/request", response_model=PredictionResponse)
-async def predict(body: PredictionRequest):
+async def predict(request: PredictionRequest):
     try:
-        await logger.info(f"Processing prediction request with id: {body.id}")
-        # Здесь будет вызов вашей модели
-        answer = 1  # Замените на реальный вызов модели
-        sources: List[HttpUrl] = [
-            HttpUrl("https://itmo.ru/ru/"),
-            HttpUrl("https://abit.itmo.ru/"),
-        ]
+        from openai import OpenAI
 
-        response = PredictionResponse(
-            id=body.id,
-            answer=answer,
-            reasoning="Из информации на сайте",
-            sources=sources,
+        client = OpenAI(api_key=OPENAI_API_KEY)
+
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[{"role": "user", "content": request.query}],
+            max_tokens=200
         )
-        await logger.info(f"Successfully processed request {body.id}")
-        return response
-    except ValueError as e:
-        error_msg = str(e)
-        await logger.error(f"Validation error for request {body.id}: {error_msg}")
-        raise HTTPException(status_code=400, detail=error_msg)
+
+        gpt_response = response.choices[0].message.content.strip()
+
+        # Определяем, является ли вопрос с вариантами ответов
+        lines = request.query.split("\n")
+        options = [line for line in lines if line.strip().isdigit()]
+
+        answer = None
+        if options:
+            for i, option in enumerate(options, 1):
+                if option in gpt_response:
+                    answer = i
+                    break
+
+        # Поиск ссылок
+        search_results = await search_links(request.query)
+
+        # Получение новостей
+        news_links = await fetch_latest_news()
+
+        # Сбор источников
+        sources = search_results + news_links
+
+        # Если нет ссылок, добавляем основные ресурсы
+        if not sources:
+            sources = [
+                "https://itmo.ru/ru/",
+                "https://abit.itmo.ru/"
+            ]
+
+        return PredictionResponse(
+            id=request.id,
+            answer=answer,
+            reasoning=gpt_response,
+            sources=sources
+        )
+
     except Exception as e:
-        await logger.error(f"Internal error processing request {body.id}: {str(e)}")
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise HTTPException(status_code=500, detail=f"Ошибка обработки запроса: {str(e)}")

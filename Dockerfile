@@ -10,4 +10,7 @@ COPY . .
 
 RUN chmod +x start.sh
 
+ENV PYTHONUNBUFFERED=1
+ENV OPENAI_API_KEY=${OPENAI_API_KEY}
+
 CMD ["./start.sh"]
