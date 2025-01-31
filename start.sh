@@ -1,5 +1,8 @@
 #!/bin/bash
 
+echo "OPENAI_API_KEY=${OPENAI_API_KEY}"
+echo "SERPER_API_KEY=${SERPER_API_KEY}"
+
 if [ -f .env ]; then
     export $(grep -v '^#' .env | xargs)
 fi

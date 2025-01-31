@@ -4,18 +4,28 @@ import openai
 import requests
 from typing import List, Optional
 
+from lxml import html
+
 from fastapi import FastAPI, HTTPException, Request, Response
 from pydantic import BaseModel, HttpUrl
 from dotenv import load_dotenv
+from crewai_tools import ScrapeWebsiteTool, SerperDevTool
 
 # Загрузка переменных окружения
 load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+SERPER_API_KEY = os.getenv("SERPER_API_KEY")
 
 if not OPENAI_API_KEY:
     raise ValueError("OPENAI_API_KEY not found in environment variables.")
+if not SERPER_API_KEY:
+    raise ValueError("SERPER_API_KEY not found in environment variables.")
 
 openai.api_key = OPENAI_API_KEY
+
+# Инициализация инструментов
+search_tool = SerperDevTool()
+scrape_tool = ScrapeWebsiteTool()
 
 
 # Определение схем данных
@@ -33,6 +43,31 @@ class PredictionResponse(BaseModel):
 
 # Инициализация FastAPI
 app = FastAPI()
+
+
+# 🔍 **Search news using Google (SerperDevTool)**
+def search_itmo_news(query: str) -> List[str]:
+    """Searches for ITMO news articles using SerperDevTool (Google search restricted to news.itmo.ru)."""
+    search_query = f"site:news.itmo.ru {query}"
+    results = search_tool.run(search_query)
+
+    if not results or "organic" not in results:
+        return []
+
+    # Extract up to 10 links from search results
+    links = [res["link"] for res in results.get("organic", [])[:10]]
+    return links
+
+
+# 📄 **Scrape article content**
+def scrape_news_page(url: str) -> dict:
+    """Extracts news article content using ScrapeWebsiteTool."""
+    scraped_content = scrape_tool.run(url)
+
+    return {
+        "content": scraped_content if scraped_content else "No content available",
+        "url": url
+    }
 
 
 # Функция для поиска ссылок
@@ -55,25 +90,24 @@ async def search_links(query: str) -> List[HttpUrl]:
     return [HttpUrl(link) for link in links if link]
 
 
-# Получение новостей с сайта ИТМО (тест)
-async def fetch_latest_news() -> List[HttpUrl]:
-    news_url = "https://news.itmo.ru/ru/science/it/"
-    response = requests.get(news_url)
+# Функция обработки вариантов ответа
+def extract_answer_options(query: str) -> List[str]:
+    """Разделяем варианты ответа по шаблону '1. ', '2. ' и т.д."""
+    options = []
+    for num in range(1, 11):  # Поддержка до 10 вариантов
+        split_query = query.split(f"{num}. ")
+        if len(split_query) > 1:
+            options.append(split_query[1].split("\n")[0])  # Берем только текст варианта
+    return options
 
-    if response.status_code != 200:
-        return []
 
-    # Простая парсинговая логика (RSS XML)
-    import xml.etree.ElementTree as ET
-    root = ET.fromstring(response.content)
-
-    news_links = []
-    for item in root.findall(".//item")[:9]:
-        link = item.find("link")
-        if link is not None:
-            news_links.append(link.text)
-
-    return [HttpUrl(link) for link in news_links if link]
+# 🔥 Функция поиска правильного ответа
+def find_correct_answer(gpt_response: str, answer_options: List[str]) -> Optional[int]:
+    """Сопоставляем ответ GPT с вариантами ответа и находим правильный номер."""
+    for i, option in enumerate(answer_options, 1):
+        if option.lower() in gpt_response.lower():
+            return i  # Номер варианта
+    return None
 
 
 # Основная логика обработки запроса
@@ -93,31 +127,19 @@ async def predict(request: PredictionRequest):
         gpt_response = response.choices[0].message.content.strip()
 
         # Определяем, является ли вопрос с вариантами ответов
-        lines = request.query.split("\n")
-        options = [line for line in lines if line.strip().isdigit()]
+        answer_options = extract_answer_options(request.query)
 
-        answer = None
-        if options:
-            for i, option in enumerate(options, 1):
-                if option in gpt_response:
-                    answer = i
-                    break
+        # Ищем правильный ответ по текстовому совпадению
+        answer = find_correct_answer(gpt_response, answer_options)
 
-        # Поиск ссылок
-        search_results = await search_links(request.query)
+        # Search ITMO news
+        news_links = search_itmo_news(request.query)
 
-        # Получение новостей
-        news_links = await fetch_latest_news()
+        # Scrape first 3 news articles
+        scraped_news = [scrape_news_page(url) for url in news_links[:3]]
 
-        # Сбор источников
-        sources = search_results + news_links
-
-        # Если нет ссылок, добавляем основные ресурсы
-        if not sources:
-            sources = [
-                "https://itmo.ru/ru/",
-                "https://abit.itmo.ru/"
-            ]
+        # Collect sources
+        sources = [news["url"] for news in scraped_news if news]
 
         return PredictionResponse(
             id=request.id,
