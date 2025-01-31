@@ -1,8 +1,6 @@
 import os
 import re
-
 import openai
-import requests
 from typing import List, Optional
 
 from fastapi import FastAPI, HTTPException
@@ -14,7 +12,7 @@ from crewai import Agent, Task, Crew, Process
 from crewai_tools import ScrapeWebsiteTool, SerperDevTool
 from langchain_openai import ChatOpenAI
 
-# 🔄 Load environment variables
+# --------------------- ENV & SETUP --------------------- #
 load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 SERPER_API_KEY = os.getenv("SERPER_API_KEY")
@@ -26,15 +24,11 @@ if not SERPER_API_KEY:
 
 openai.api_key = OPENAI_API_KEY
 
-# 📌 Initialize tools
-search_tool = SerperDevTool()
-scrape_tool = ScrapeWebsiteTool()
-
-# 🚀 Initialize FastAPI
+# --------------------- FASTAPI INIT --------------------- #
 app = FastAPI()
 
 
-# 📌 Define Data Models
+# --------------------- DATA MODELS --------------------- #
 class PredictionRequest(BaseModel):
     id: int
     query: str
@@ -47,112 +41,9 @@ class PredictionResponse(BaseModel):
     sources: List[HttpUrl]
 
 
-# 🔍 **Search News Agent**
-search_agent = Agent(
-    role="Search Agent",
-    backstory="Агент, ответственный за извлечение новостей по вопросу {query}, связанных с ИТМО.",
-    goal="Искать новости, касающиеся ИТМО по вопросу {query} с помощью SerperDevTool.",
-    tools=[search_tool],
-    allow_delegation=False,
-    verbose=True,
-    max_iter=1,
-    max_rpm=10,
-    llm=ChatOpenAI(model_name="gpt-4o", temperature=0.7)
-)
-
-# 📄 **Scrape News Agent**
-scrape_agent = Agent(
-    role="Scraping Agent",
-    backstory="Специализируется на извлечении ключевой информации по вопросу {query} из веб-страниц.",
-    goal="Извлекать ключевую информацию по вопросу {query} из текста об ИТМО.",
-    tools=[scrape_tool],
-    allow_delegation=False,
-    verbose=True,
-    max_iter=1,
-    max_rpm=10,
-    llm=ChatOpenAI(model_name="gpt-4o", temperature=0.7)
-)
-
-# 🤖 **Answer Processing Agent**
-answer_agent = Agent(
-    role="Answer Agent",
-    backstory="Агент, отвечающий на вопрос {query} используя извлечённую информацию.",
-    goal="Написать правильный ответ на вопрос {query}.",
-    tools=[],
-    allow_delegation=False,
-    verbose=True,
-    max_iter=1,
-    max_rpm=10,
-    llm=ChatOpenAI(model_name="gpt-4o", temperature=0.7)
-)
-
-# 🔎 **Task 1: Search ITMO News**
-search_task = Task(
-    description="Найди 2 сайта по вопросу {query} про ИТМО используя SerperDevTool.",
-    expected_output="Список из 2 URL-адресов по вопросу {query} об университете ИТМО.",
-    agent=search_agent
-)
-
-# 📑 **Task 2: Scrape News Articles**
-scrape_task = Task(
-    description="Извлеки ОДНО предложение из сайта по вопросу {query}, найденных на этапе поиска.",
-    expected_output="ОДНО предложение с ответом на вопрос {query} из статьи.",
-    agent=scrape_agent,
-    context=[search_task]
-)
-
-# 🤖 **Task 3: Process Question and Answer**
-answer_task = Task(
-    description="Проанализируй предложение и ответь на вопрос {query} пользователя.",
-    expected_output="Очень коротко ответь на вопрос {query}, пояснив правильный вариант.",
-    agent=answer_agent,
-    context=[scrape_task]
-)
-
-# 🚀 **Define Crew**
-crew = Crew(
-    agents=[search_agent, scrape_agent, answer_agent],
-    tasks=[search_task, scrape_task, answer_task],
-    process=Process.sequential,
-    verbose=True
-)
-
-
-# 🎯 **Extract Multiple Choice Options**
-def extract_answer_options(query: str) -> List[str]:
-    options = []
-    for num in range(1, 11):
-        split_query = query.split(f"{num}. ")
-        if len(split_query) > 1:
-            options.append(split_query[1].split("\n")[0])
-    return options
-
-
-# 🔥 **Find Correct Answer from GPT Response**
-def find_correct_answer(gpt_response: str, answer_options: List[str]) -> Optional[int]:
-    for i, option in enumerate(answer_options, 1):
-        # Simple substring match – adjust if needed
-        if option.lower() in gpt_response.lower():
-            return i
-    return None
-
-
-def extract_urls_from_text(text: str) -> List[HttpUrl]:
-    """Simple regex-based URL extraction from text."""
-    pattern = r'(https?://[^\s)]+)'
-    found_urls = re.findall(pattern, text)
-    valid_urls = []
-    for url in found_urls:
-        url = url.rstrip(').,;')
-        try:
-            valid_urls.append(url)
-        except ValidationError:
-            continue
-    return valid_urls
-
-
-def chunk_text(text: str, max_chars: int = 4000) -> list:
-    """Split text into chunks of approximately `max_chars` characters."""
+# --------------------- LLM CHUNK & SUMMARIZE --------------------- #
+def chunk_text(text: str, max_chars: int = 3000) -> list:
+    """Split text into chunks of ~`max_chars` characters."""
     chunks = []
     start = 0
     while start < len(text):
@@ -163,7 +54,7 @@ def chunk_text(text: str, max_chars: int = 4000) -> list:
 
 
 def summarize_chunk(chunk: str, model="gpt-3.5-turbo") -> str:
-    """Summarize a single chunk using a smaller or cheaper model (e.g., GPT-3.5)."""
+    """Summarize a single chunk using a smaller model to reduce token usage."""
     prompt = f"Summarize the following text as concisely as possible:\n\n{chunk}"
     response = openai.ChatCompletion.create(
         model=model,
@@ -174,68 +65,144 @@ def summarize_chunk(chunk: str, model="gpt-3.5-turbo") -> str:
 
 
 def summarize_large_text(full_text: str) -> str:
-    """
-    1. Split the text into manageable chunks.
-    2. Summarize each chunk.
-    3. Combine those chunk-summaries into a final summary.
-    """
-    # 1) Split the text into chunks
-    chunks = chunk_text(full_text, max_chars=3000)  # adjust as needed
-
-    # 2) Summarize each chunk individually
+    """Chunk+summarize a large text, then combine partial summaries into a final summary."""
+    chunks = chunk_text(full_text, max_chars=3000)
     partial_summaries = []
     for chunk in chunks:
         summary = summarize_chunk(chunk)
         partial_summaries.append(summary)
 
-    # 3) Merge partial summaries into one text
     merged_text = "\n\n".join(partial_summaries)
-
-    # 4) Summarize the merged text again if needed
-    if len(merged_text) > 3000:  # or any threshold you want
+    # If the merged text is still large, do an extra summarization pass
+    if len(merged_text) > 3000:
         return summarize_chunk(merged_text)
     else:
         return merged_text
 
 
-# --------------------- API ENDPOINT --------------------- #
+# --------------------- HELPERS --------------------- #
+def extract_answer_options(query: str) -> List[str]:
+    """Extract multiple-choice options from the user's query."""
+    options = []
+    for num in range(1, 11):
+        split_query = query.split(f"{num}. ")
+        if len(split_query) > 1:
+            options.append(split_query[1].split("\n")[0])
+    return options
+
+
+def find_correct_answer(gpt_response: str, answer_options: List[str]) -> Optional[int]:
+    """Simple substring match for the recognized answer option."""
+    for i, option in enumerate(answer_options, 1):
+        if option.lower() in gpt_response.lower():
+            return i
+    return None
+
+
+def extract_urls_from_text(text: str) -> List[HttpUrl]:
+    """Use regex to find URLs in raw text; validate them as HttpUrl."""
+    pattern = r'(https?://[^\s)]+)'
+    found_urls = re.findall(pattern, text)
+    valid_urls = []
+    for url in found_urls:
+        url = url.rstrip(').,;')
+        # We won't cast directly to HttpUrl for speed; if you want strict validation:
+        try:
+            valid_urls.append(url)
+        except ValidationError:
+            continue
+    return valid_urls
+
+
+# --------------------- AGENTS --------------------- #
+search_agent = Agent(
+    role="Search Agent",
+    backstory="Агент, ответственный за извлечение новостей по вопросу {query}, связанных с ИТМО.",
+    goal="Искать новости, касающиеся ИТМО по вопросу {query} с помощью SerperDevTool.",
+    tools=[SerperDevTool()],
+    allow_delegation=False,
+    verbose=True,
+    max_iter=1,
+    max_rpm=10,
+    llm=ChatOpenAI(model_name="gpt-4o", temperature=0.7)
+)
+
+scrape_agent = Agent(
+    role="Scraping Agent",
+    backstory="Специализируется на извлечении ключевой информации по вопросу {query} из веб-страниц.",
+    goal="Извлекать ключевую информацию по вопросу {query} из текста об ИТМО.",
+    tools=[ScrapeWebsiteTool()],
+    allow_delegation=False,
+    verbose=True,
+    max_iter=1,
+    max_rpm=10,
+    llm=ChatOpenAI(model_name="gpt-4o", temperature=0.7)
+)
+
+# --------------------- TASKS --------------------- #
+search_task = Task(
+    description="Найди 2 сайта по вопросу {query} про ИТМО используя SerperDevTool.",
+    expected_output="Список из 2 URL-адресов по вопросу {query} об университете ИТМО.",
+    agent=search_agent
+)
+
+scrape_task = Task(
+    description="Извлеки ОДНО предложение из сайтов по вопросу {query}, найденных на этапе поиска.",
+    expected_output="Одно предложение (или краткая сводка) с ответом на вопрос {query}.",
+    agent=scrape_agent,
+    context=[search_task]
+)
+
+# --------------------- CREW (2 Tasks Only) --------------------- #
+crew = Crew(
+    agents=[search_agent, scrape_agent],  # Removed the third agent
+    tasks=[search_task, scrape_task],  # Only 2 tasks
+    process=Process.sequential,
+    verbose=True
+)
+
+
+# --------------------- MAIN ENDPOINT --------------------- #
 @app.post("/api/request", response_model=PredictionResponse)
 async def predict(request: PredictionRequest):
     """
-    Kick off the entire Crew. The search_task, scrape_task, and answer_task
-    will run in sequence. We then parse the final outputs to fill the response.
+    This pipeline:
+    1) Searches for news links about query.
+    2) Scrapes them (1 sentence).
+    3) Summarizes if needed, then determines the final multiple-choice answer from the summarized text.
+    The final text from the second (scrape) agent is stored in "reasoning".
     """
     try:
-        # 1) Kick off the entire crew with the user's query as input
+        # Run the 2-task crew
         crew_output: CrewOutput = crew.kickoff(inputs={"query": request.query})
-
-        # 2) The CrewOutput has a tasks_output list, matching the order: [search_task, scrape_task, answer_task].
         tasks_out = crew_output.tasks_output
 
-        if len(tasks_out) < 3:
-            raise ValueError("Not enough tasks output. Expected 3 tasks in tasks_output.")
+        if len(tasks_out) < 2:
+            raise ValueError("Expected 2 tasks. Found fewer in tasks_output.")
 
-        # 3) Get the raw text from each step
-        #    tasks_out[0] => search_task
-        #    tasks_out[1] => scrape_task
-        #    tasks_out[2] => answer_task (the final)
+        # 1) Extract raw text from the first task (search) and second (scrape)
         search_text = tasks_out[0].raw
-        scrape_text = tasks_out[1].raw
-        final_text = tasks_out[2].raw
+        scrape_text = tasks_out[1].raw  # This is final now
 
-        # 4) Parse actual sources from the search step
+        # 2) Parse actual sources from the search step
         sources = extract_urls_from_text(search_text)
 
-        # 5) Derive the final short answer from final_text
-        answer_options = extract_answer_options(request.query)
-        answer = find_correct_answer(final_text, answer_options)
+        # 3) Possibly chunk & summarize the second agent's output if it's big
+        #    This final text goes into "reasoning"
+        final_reasoning = scrape_text.strip()
+        if len(final_reasoning) > 3000:  # Arbitrary threshold
+            final_reasoning = summarize_large_text(final_reasoning)
 
-        # 6) Return the final result
+        # 4) Derive multiple-choice answer from the final reasoning
+        answer_options = extract_answer_options(request.query)
+        answer = find_correct_answer(final_reasoning, answer_options)
+
+        # 5) Return the final result
         return PredictionResponse(
             id=request.id,
             answer=answer,
-            reasoning=final_text.strip(),
-            sources=sources  # from the search step
+            reasoning=final_reasoning,
+            sources=sources
         )
 
     except Exception as e:
